@@ -1,0 +1,228 @@
+Requirement
+1. Customer can check balance/withdraw/deposit cash from ATM
+2. System will send notification in case of withdrawal/deposit transaction
+3. Customer can change PIN code
+4. ATM will print receipt after each transaction
+5. Support maintenance operations (refill cash, refill paper, collect deposits, diagnostics)
+6. Enforce limits (daily withdrawal/deposit, PIN retries) and error handling
+
+
+Actor
+1. Customer
+2. Operator
+3. ATM System
+4. Bank Service (external)
+5. Notification Service (external)
+
+Use case:
+Operator:
+1. Maintain ATM machine: refill cash (by denomination), lock/unlock for maintenance.
+2. Refill printer receipt paper.
+3. Take out cash for deposit to bank / collect deposit envelopes.
+4. Run diagnostics and view error logs.
+
+Customer:
+1. Check balance (includes Authenticate, Print Receipt).
+2. Withdraw cash (includes Authenticate, Validate Limits, Dispense Cash, Send Notification, Print Receipt).
+3. Deposit cash/check (includes Authenticate, Accept Deposit, Validate/Confirm, Send Notification, Print Receipt).
+4. Change PIN code (includes Authenticate, Update PIN at Bank, Print Receipt).
+5. Cancel/Timeout handling.
+
+Core class:
+Address
+- street: String
+- city: String
+- state: String
+- zipCode: String
+
+
+ATM
+- atmID: String
+- address: Address
+- cashDispenser: CashDispenser
+- receiptPrinter: ReceiptPrinter
+- keyPad: KeyPad
+- screen: Screen
+- cardReader: CardReader
+- depositSlot: DepositSlot
+- controller: ATMController
+- bankService: BankService
+- notificationService: NotificationService
+- auditLogService: AuditLogService
+
+ATMController
+- currentSession: Session
+- startSession(card: Card): void
+- authenticate(pin: String): boolean
+- selectTransaction(type: TransactionType): void
+- performBalanceInquiry(): Transaction
+- performWithdrawal(amount: Double): Transaction
+- performDeposit(amount: Double, depositType: DepositType): Transaction
+- performPinChange(oldPin: String, newPin: String): Transaction
+- endSession(): void
+
+Session
+- sessionId: String
+- state: ATMState
+- card: Card
+- customerAccount: Account
+- attemptsRemaining: Integer
+- startTime: Date
+
+CashDispenser
+- denominations: Map<Integer, Integer>  // key: bill value, value: count
+- totalCash(): Double
+- canDispense(amount: Double): Boolean
+- dispense(amount: Double): void
+- reload(denoms: Map<Integer, Integer>): void
+
+ReceiptPrinter
+- paperRemaining: Integer
+- isPaperAvailable(): Boolean
+- print(receipt: Receipt): void
+
+KeyPad
+- inputNumber(): String
+- getPinInput(): String
+- getAmountInput(): Double
+
+Screen
+- displayMessage(message: String): void
+- displayBalance(balance: Double): void
+
+CardReader
+- readCard(): Card
+- ejectCard(): void
+- captureCard(): void
+
+DepositSlot
+- isDepositReceived(): Boolean
+- accept(amount: Double, type: DepositType): Boolean
+- validate(): Boolean
+
+Customer
+- name: String
+- phoneNumber: String
+- email: String
+- address: Address
+- account: Account
+- card: Card
+- notificationPreference: NotificationPreference
+
+Account
+- accountNumber: String
+- balance: Double
+- accountType: AccountType
+- status: AccountStatus
+- dailyWithdrawnAmount: Double
+- dailyDepositedAmount: Double
+- currency: String
+
+Card
+- cardNumber: String
+- customerName: String
+- expirationDate: Date
+- pin: String
+- status: CardStatus
+- triesRemaining: Integer
+- issueBankCode: String
+
+Bank
+- bankName: String
+- bankCode: String
+
+BankService
+- getBalance(accountNumber: String): Double
+- debit(accountNumber: String, amount: Double, referenceId: String): boolean
+- credit(accountNumber: String, amount: Double, referenceId: String): boolean
+- validateCard(card: Card): boolean
+- validatePIN(card: Card, pin: String): boolean
+- changePIN(card: Card, oldPin: String, newPin: String): boolean
+- checkDailyLimit(accountNumber: String, amount: Double, type: TransactionType): boolean
+
+NotificationService
+- sendWithdrawal(account: Account, amount: Double): void
+- sendDeposit(account: Account, amount: Double): void
+
+AuditLogService
+- record(transaction: Transaction): void
+- recordEvent(sessionId: String, event: String, details: String): void
+
+Transaction
+- id: String
+- type: TransactionType  // BALANCE_INQUIRY, WITHDRAWAL, DEPOSIT, PIN_CHANGE
+- amount: Double (nullable for inquiry/PIN change)
+- timestamp: Date
+- status: TransactionStatus  // PENDING, SUCCESS, FAILED
+- accountNumber: String
+- atmID: String
+- balanceBefore: Double
+- balanceAfter: Double
+- referenceNumber: String
+- messages: List<String>
+
+Receipt
+- transactionId: String
+- atmID: String
+- accountMasked: String
+- date: Date
+- lines: List<String>
+
+Enums
+TransactionType: {BALANCE_INQUIRY, WITHDRAWAL, DEPOSIT, PIN_CHANGE}
+TransactionStatus: {PENDING, SUCCESS, FAILED}
+DepositType: {CASH, CHECK, ENVELOPE}
+ATMState: {IDLE, CARD_INSERTED, AUTHENTICATED, TRANSACTION_SELECTION, PROCESSING, PRINTING_RECEIPT, EJECT_CARD, MAINTENANCE}
+NotificationPreference: {SMS, EMAIL, BOTH, NONE}
+AccountType: {CHECKING, SAVINGS}
+AccountStatus: {ACTIVE, FROZEN, CLOSED}
+CardStatus: {ACTIVE, LOCKED, EXPIRED}
+
+
+State machine (session flow)
+IDLE -> CARD_INSERTED -> AUTHENTICATED -> TRANSACTION_SELECTION -> PROCESSING -> PRINTING_RECEIPT -> EJECT_CARD -> IDLE
+- Cancel and timeout: from any interactive state, go to EJECT_CARD -> IDLE.
+- Maintenance: Operator sets MAINTENANCE; customer transactions disabled, operator functions enabled.
+
+
+Constraints and policies
+- PIN retries: max 3 attempts; capture or lock card after exceeding; AuditLog event.
+- Daily limits: per account and per transaction type; enforced via BankService.checkDailyLimit.
+- Amount validation: multiples of supported denominations; max per transaction; min per deposit.
+- Denomination constraints: CashDispenser must be able to construct requested amount.
+- Receipt requirement: print after SUCCESS or FAILED transaction (with error message) when paper available.
+- Notifications: send on withdrawal/deposit; async with retry on failure.
+- Error handling: handle insufficient funds, insufficient ATM cash, network failures, hardware jams, expired/locked card.
+- Idempotency: use referenceNumber per transaction to avoid double debit/credit on retries.
+
+
+Sequence overview (example: Withdrawal)
+1. CARD_INSERTED: CardReader.readCard() -> validate card.
+2. AUTHENTICATED: ATMController.authenticate(pin) via BankService.validatePIN.
+3. TRANSACTION_SELECTION: choose WITHDRAWAL; input amount.
+4. PROCESSING:
+   - validate amount and limits (BankService.checkDailyLimit).
+   - verify account balance (BankService.getBalance) and ATM cash (CashDispenser.canDispense).
+   - debit account (BankService.debit) using referenceNumber.
+   - dispense cash (CashDispenser.dispense).
+   - record audit (AuditLogService.record).
+   - send notification (NotificationService.sendWithdrawal).
+5. PRINTING_RECEIPT: build Receipt from Transaction; ReceiptPrinter.print.
+6. EJECT_CARD: CardReader.ejectCard(); end session.
+
+Deposit overview
+- Accept deposit via DepositSlot.accept; validate if CHECK; credit account immediately or mark pending; audit, notify, print receipt.
+
+PIN change overview
+- Validate old PIN; enforce policy; update via BankService.changePIN; audit; print receipt.
+
+
+Non-functional requirements
+- Availability: ATM should fail gracefully on external service outages; display meaningful messages.
+- Security: Protect PIN entry; encrypt communication with BankService; comply with PCI-DSS; mask account/card on receipts.
+- Logging/Audit retention: retain audit logs per compliance requirements.
+- Localization: Screen messages and receipts support preferred language.
+
+Notes
+- Renumbered and expanded requirements and use cases for clarity.
+- Added missing entities and services to make the design implementable.
